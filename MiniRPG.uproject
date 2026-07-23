@@ -1,0 +1,13 @@
+{
+	"FileVersion": 3,
+	"EngineAssociation": "5.8",
+	"Category": "",
+	"Description": "A small single-player RPG slice.",
+	"Modules": [
+		{
+			"Name": "MiniRPG",
+			"Type": "Runtime",
+			"LoadingPhase": "Default"
+		}
+	]
+}
