@@ -8,7 +8,9 @@ UENUM(BlueprintType)
 enum class EItemType : uint8
 {
 	Potion,
-	WeaponUpgrade
+	WeaponUpgrade,
+	Wood,
+	Ore
 };
 
 USTRUCT(BlueprintType)
@@ -41,4 +43,5 @@ public:
 
 	void AddItem(const FInventoryItem& Item);
 	void UseItem(int32 Index);
+	int32 FindFirstOfType(EItemType Type) const;
 };

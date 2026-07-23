@@ -1,5 +1,6 @@
 #include "MiniRPGGameMode.h"
 #include "MiniRPGPlayerCharacter.h"
+#include "MiniRPGPlayerController.h"
 #include "MiniRPGEnemyCharacter.h"
 #include "MiniRPGPickup.h"
 #include "MiniRPGProp.h"
@@ -12,6 +13,7 @@
 AMiniRPGGameMode::AMiniRPGGameMode()
 {
 	DefaultPawnClass = AMiniRPGPlayerCharacter::StaticClass();
+	PlayerControllerClass = AMiniRPGPlayerController::StaticClass();
 	EnemyClass = AMiniRPGEnemyCharacter::StaticClass();
 	PickupClass = AMiniRPGPickup::StaticClass();
 }
@@ -29,7 +31,7 @@ void AMiniRPGGameMode::BeginPlay()
 	if (GEngine)
 	{
 		GEngine->AddOnScreenDebugMessage(-1, 7.0f, FColor::Yellow,
-			TEXT("Explore the clearing, defeat all raiders, collect potions and a weapon upgrade. WASD move, Space attack, E use item."));
+			TEXT("Left-click to walk, fight raiders, and chop/mine trees and rocks. Defeat every raider to win!"));
 	}
 }
 

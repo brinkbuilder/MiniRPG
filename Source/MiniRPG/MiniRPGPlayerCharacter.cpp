@@ -1,6 +1,7 @@
 #include "MiniRPGPlayerCharacter.h"
 #include "GameFramework/CharacterMovementComponent.h"
 #include "GameFramework/SpringArmComponent.h"
+#include "GameFramework/PlayerController.h"
 #include "Camera/CameraComponent.h"
 #include "Components/CapsuleComponent.h"
 #include "Components/SkeletalMeshComponent.h"
@@ -8,6 +9,7 @@
 #include "RPGStatsComponent.h"
 #include "InventoryComponent.h"
 #include "MiniRPGEnemyCharacter.h"
+#include "MiniRPGProp.h"
 #include "MiniRPGGameMode.h"
 #include "Kismet/KismetSystemLibrary.h"
 #include "Engine/EngineTypes.h"
@@ -49,8 +51,8 @@ AMiniRPGPlayerCharacter::AMiniRPGPlayerCharacter()
 
 	SpringArm = CreateDefaultSubobject<USpringArmComponent>(TEXT("SpringArm"));
 	SpringArm->SetupAttachment(RootComponent);
-	SpringArm->TargetArmLength = 700.0f;
-	SpringArm->SetRelativeRotation(FRotator(-45.0f, 0.0f, 0.0f));
+	SpringArm->TargetArmLength = 800.0f;
+	SpringArm->SetRelativeRotation(FRotator(-55.0f, 0.0f, 0.0f));
 	SpringArm->bDoCollisionTest = false;
 	SpringArm->bEnableCameraLag = true;
 	SpringArm->CameraLagSpeed = 6.0f;
@@ -72,16 +74,144 @@ void AMiniRPGPlayerCharacter::SetupPlayerInputComponent(UInputComponent* PlayerI
 	PlayerInputComponent->BindAxis("MoveRight", this, &AMiniRPGPlayerCharacter::MoveRight);
 	PlayerInputComponent->BindAction("Attack", IE_Pressed, this, &AMiniRPGPlayerCharacter::OnAttackPressed);
 	PlayerInputComponent->BindAction("UseItem", IE_Pressed, this, &AMiniRPGPlayerCharacter::OnUseItemPressed);
+	PlayerInputComponent->BindAction("Click", IE_Pressed, this, &AMiniRPGPlayerCharacter::OnClickPressed);
 }
 
 void AMiniRPGPlayerCharacter::MoveForward(float Value)
 {
-	AddMovementInput(FVector::ForwardVector, Value);
+	if (FMath::Abs(Value) > KINDA_SMALL_NUMBER)
+	{
+		CancelAutoAction();
+		AddMovementInput(FVector::ForwardVector, Value);
+	}
 }
 
 void AMiniRPGPlayerCharacter::MoveRight(float Value)
 {
-	AddMovementInput(FVector::RightVector, Value);
+	if (FMath::Abs(Value) > KINDA_SMALL_NUMBER)
+	{
+		CancelAutoAction();
+		AddMovementInput(FVector::RightVector, Value);
+	}
+}
+
+void AMiniRPGPlayerCharacter::CancelAutoAction()
+{
+	bHasMoveTarget = false;
+	AttackTarget = nullptr;
+	GatherTarget = nullptr;
+}
+
+void AMiniRPGPlayerCharacter::OnClickPressed()
+{
+	APlayerController* PC = Cast<APlayerController>(GetController());
+	if (!PC)
+	{
+		return;
+	}
+
+	FHitResult Hit;
+	if (!PC->GetHitResultUnderCursor(ECC_Visibility, false, Hit) || !Hit.bBlockingHit)
+	{
+		return;
+	}
+
+	CancelAutoAction();
+
+	if (AMiniRPGEnemyCharacter* Enemy = Cast<AMiniRPGEnemyCharacter>(Hit.GetActor()))
+	{
+		if (Enemy->StatsComponent && !Enemy->StatsComponent->IsDead())
+		{
+			AttackTarget = Enemy;
+			return;
+		}
+	}
+
+	if (AMiniRPGProp* Prop = Cast<AMiniRPGProp>(Hit.GetActor()))
+	{
+		if (Prop->IsGatherable())
+		{
+			GatherTarget = Prop;
+			return;
+		}
+	}
+
+	MoveTargetLocation = Hit.Location;
+	bHasMoveTarget = true;
+}
+
+void AMiniRPGPlayerCharacter::MoveToward(const FVector& TargetLocation)
+{
+	FVector Direction = TargetLocation - GetActorLocation();
+	Direction.Z = 0.0f;
+	if (!Direction.IsNearlyZero())
+	{
+		AddMovementInput(Direction.GetSafeNormal(), 1.0f);
+	}
+}
+
+void AMiniRPGPlayerCharacter::UpdateAutoActions()
+{
+	if (StatsComponent && StatsComponent->IsDead())
+	{
+		CancelAutoAction();
+		return;
+	}
+
+	if (AttackTarget.IsValid())
+	{
+		if (!AttackTarget->StatsComponent || AttackTarget->StatsComponent->IsDead())
+		{
+			AttackTarget = nullptr;
+			return;
+		}
+
+		const float Dist = FVector::Dist(GetActorLocation(), AttackTarget->GetActorLocation());
+		if (Dist > AttackRange)
+		{
+			MoveToward(AttackTarget->GetActorLocation());
+		}
+		else
+		{
+			DealDamageToEnemy(AttackTarget.Get());
+		}
+		return;
+	}
+
+	if (GatherTarget.IsValid())
+	{
+		if (!GatherTarget->IsGatherable())
+		{
+			// A rock went dark mid-approach -- give up on it rather than
+			// stand there waiting for a respawn.
+			GatherTarget = nullptr;
+			return;
+		}
+
+		const float Dist = FVector::Dist(GetActorLocation(), GatherTarget->GetActorLocation());
+		if (Dist > GatherRange)
+		{
+			MoveToward(GatherTarget->GetActorLocation());
+		}
+		else
+		{
+			TryGather(GatherTarget.Get());
+		}
+		return;
+	}
+
+	if (bHasMoveTarget)
+	{
+		const float Dist = FVector::Dist2D(GetActorLocation(), MoveTargetLocation);
+		if (Dist > 30.0f)
+		{
+			MoveToward(MoveTargetLocation);
+		}
+		else
+		{
+			bHasMoveTarget = false;
+		}
+	}
 }
 
 void AMiniRPGPlayerCharacter::OnAttackPressed()
@@ -90,13 +220,6 @@ void AMiniRPGPlayerCharacter::OnAttackPressed()
 	{
 		return;
 	}
-
-	const float Now = GetWorld()->GetTimeSeconds();
-	if (Now - LastAttackTime < AttackCooldown)
-	{
-		return;
-	}
-	LastAttackTime = Now;
 
 	TArray<AActor*> IgnoreActors;
 	IgnoreActors.Add(this);
@@ -109,44 +232,116 @@ void AMiniRPGPlayerCharacter::OnAttackPressed()
 
 	for (AActor* Actor : OverlappingActors)
 	{
-		AMiniRPGEnemyCharacter* Enemy = Cast<AMiniRPGEnemyCharacter>(Actor);
-		if (!Enemy || !Enemy->StatsComponent || Enemy->StatsComponent->IsDead())
+		if (AMiniRPGEnemyCharacter* Enemy = Cast<AMiniRPGEnemyCharacter>(Actor))
 		{
-			continue;
+			DealDamageToEnemy(Enemy);
+			break;
 		}
+	}
+}
 
-		Enemy->StatsComponent->TakeDamage(StatsComponent->AttackPower);
+void AMiniRPGPlayerCharacter::DealDamageToEnemy(AMiniRPGEnemyCharacter* Enemy)
+{
+	if (!Enemy || !Enemy->StatsComponent || Enemy->StatsComponent->IsDead() || !StatsComponent)
+	{
+		return;
+	}
 
+	const float Now = GetWorld()->GetTimeSeconds();
+	if (Now - LastAttackTime < AttackCooldown)
+	{
+		return;
+	}
+	LastAttackTime = Now;
+
+	Enemy->StatsComponent->TakeDamage(StatsComponent->AttackPower);
+
+	if (GEngine)
+	{
+		GEngine->AddOnScreenDebugMessage(-1, 1.5f, FColor::Orange, TEXT("Hit!"));
+	}
+
+	if (Enemy->StatsComponent->IsDead())
+	{
+		StatsComponent->GainExperience(Enemy->ExperienceReward);
 		if (GEngine)
 		{
-			GEngine->AddOnScreenDebugMessage(-1, 2.0f, FColor::Orange, TEXT("Hit!"));
+			GEngine->AddOnScreenDebugMessage(-1, 2.0f, FColor::Cyan, TEXT("Enemy defeated!"));
 		}
-
-		if (Enemy->StatsComponent->IsDead())
+		if (AMiniRPGGameMode* GM = GetWorld()->GetAuthGameMode<AMiniRPGGameMode>())
 		{
-			StatsComponent->GainExperience(Enemy->ExperienceReward);
-			if (GEngine)
-			{
-				GEngine->AddOnScreenDebugMessage(-1, 2.0f, FColor::Cyan, TEXT("Enemy defeated!"));
-			}
-			if (AMiniRPGGameMode* GM = GetWorld()->GetAuthGameMode<AMiniRPGGameMode>())
-			{
-				GM->NotifyEnemyDefeated();
-			}
-			Enemy->Destroy();
+			GM->NotifyEnemyDefeated();
 		}
-		break;
+		AttackTarget = nullptr;
+		Enemy->Destroy();
+	}
+}
+
+void AMiniRPGPlayerCharacter::TryGather(AMiniRPGProp* Prop)
+{
+	if (!Prop || !Prop->IsGatherable())
+	{
+		GatherTarget = nullptr;
+		return;
+	}
+
+	const float Now = GetWorld()->GetTimeSeconds();
+	if (Now - LastGatherTime < GatherCooldown)
+	{
+		return;
+	}
+	LastGatherTime = Now;
+
+	if (Prop->GetGatherResource() == EGatherResource::Wood)
+	{
+		WoodcuttingSkill.GainXP(8);
+		if (InventoryComponent)
+		{
+			FInventoryItem Item;
+			Item.Name = TEXT("Logs");
+			Item.Type = EItemType::Wood;
+			Item.Value = 1;
+			InventoryComponent->AddItem(Item);
+		}
+		if (GEngine)
+		{
+			GEngine->AddOnScreenDebugMessage(-1, 1.5f, FColor::Green, TEXT("You chop some logs."));
+		}
+	}
+	else if (Prop->GetGatherResource() == EGatherResource::Ore)
+	{
+		MiningSkill.GainXP(12);
+		if (InventoryComponent)
+		{
+			FInventoryItem Item;
+			Item.Name = TEXT("Ore");
+			Item.Type = EItemType::Ore;
+			Item.Value = 1;
+			InventoryComponent->AddItem(Item);
+		}
+		Prop->Deplete(8.0f);
+		GatherTarget = nullptr;
+		if (GEngine)
+		{
+			GEngine->AddOnScreenDebugMessage(-1, 1.5f, FColor::Green, TEXT("You mine some ore. The rock crumbles."));
+		}
 	}
 }
 
 void AMiniRPGPlayerCharacter::OnUseItemPressed()
 {
-	if (InventoryComponent && InventoryComponent->Items.Num() > 0)
+	if (!InventoryComponent)
 	{
-		InventoryComponent->UseItem(0);
+		return;
+	}
+
+	const int32 PotionIndex = InventoryComponent->FindFirstOfType(EItemType::Potion);
+	if (PotionIndex != INDEX_NONE)
+	{
+		InventoryComponent->UseItem(PotionIndex);
 		if (GEngine)
 		{
-			GEngine->AddOnScreenDebugMessage(-1, 2.0f, FColor::Green, TEXT("Used an item."));
+			GEngine->AddOnScreenDebugMessage(-1, 2.0f, FColor::Green, TEXT("Used a potion."));
 		}
 	}
 }
@@ -154,17 +349,44 @@ void AMiniRPGPlayerCharacter::OnUseItemPressed()
 void AMiniRPGPlayerCharacter::Tick(float DeltaSeconds)
 {
 	Super::Tick(DeltaSeconds);
+	UpdateAutoActions();
 
-	if (GEngine && StatsComponent)
+	if (!GEngine || !StatsComponent)
 	{
-		const FString StatusLine = StatsComponent->IsDead()
-			? TEXT("You died. Press Play again to restart.")
-			: FString::Printf(TEXT("Lv %d | HP %d/%d | ATK %d | DEF %d | XP %d/%d | Items: %d  (Space=Attack, E=Use Item)"),
-				StatsComponent->Level, StatsComponent->CurrentHealth, StatsComponent->MaxHealth,
-				StatsComponent->AttackPower, StatsComponent->Defense,
-				StatsComponent->Experience, StatsComponent->ExperienceToNextLevel,
-				InventoryComponent ? InventoryComponent->Items.Num() : 0);
-
-		GEngine->AddOnScreenDebugMessage(0, 0.0f, FColor::Yellow, StatusLine);
+		return;
 	}
+
+	if (StatsComponent->IsDead())
+	{
+		GEngine->AddOnScreenDebugMessage(0, 0.0f, FColor::Red, TEXT("You died. Press Play again to restart."));
+		return;
+	}
+
+	GEngine->AddOnScreenDebugMessage(0, 0.0f, FColor::Yellow, FString::Printf(
+		TEXT("Combat Lv %d | HP %d/%d | ATK %d | DEF %d | XP %d/%d"),
+		StatsComponent->Level, StatsComponent->CurrentHealth, StatsComponent->MaxHealth,
+		StatsComponent->AttackPower, StatsComponent->Defense,
+		StatsComponent->Experience, StatsComponent->ExperienceToNextLevel));
+
+	GEngine->AddOnScreenDebugMessage(1, 0.0f, FColor::Green, FString::Printf(
+		TEXT("Woodcutting Lv %d (XP %d/%d) | Mining Lv %d (XP %d/%d)"),
+		WoodcuttingSkill.Level, WoodcuttingSkill.XP, WoodcuttingSkill.XPToNextLevel,
+		MiningSkill.Level, MiningSkill.XP, MiningSkill.XPToNextLevel));
+
+	int32 Logs = 0, Ore = 0, Potions = 0, Upgrades = 0;
+	for (const FInventoryItem& Item : InventoryComponent->Items)
+	{
+		switch (Item.Type)
+		{
+		case EItemType::Wood: Logs++; break;
+		case EItemType::Ore: Ore++; break;
+		case EItemType::Potion: Potions++; break;
+		case EItemType::WeaponUpgrade: Upgrades++; break;
+		}
+	}
+	GEngine->AddOnScreenDebugMessage(2, 0.0f, FColor::White, FString::Printf(
+		TEXT("Inventory -- Logs: %d | Ore: %d | Potions: %d | Upgrades: %d"), Logs, Ore, Potions, Upgrades));
+
+	GEngine->AddOnScreenDebugMessage(3, 0.0f, FColor::White,
+		TEXT("Left-click: ground to walk, an enemy to fight, a tree/rock to gather. WASD also moves. Space=attack, E=use potion."));
 }

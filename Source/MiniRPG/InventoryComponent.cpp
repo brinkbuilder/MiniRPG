@@ -29,8 +29,24 @@ void UInventoryComponent::UseItem(int32 Index)
 		case EItemType::WeaponUpgrade:
 			Stats->AttackPower += Item.Value;
 			break;
+		default:
+			// Raw resources (Wood, Ore) have no direct-use effect -- they're
+			// just carried for now.
+			break;
 		}
 	}
 
 	Items.RemoveAt(Index);
+}
+
+int32 UInventoryComponent::FindFirstOfType(EItemType Type) const
+{
+	for (int32 i = 0; i < Items.Num(); ++i)
+	{
+		if (Items[i].Type == Type)
+		{
+			return i;
+		}
+	}
+	return INDEX_NONE;
 }
