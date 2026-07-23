@@ -1,6 +1,8 @@
 #include "MiniRPGPickup.h"
 #include "Components/StaticMeshComponent.h"
 #include "Components/SphereComponent.h"
+#include "Components/PointLightComponent.h"
+#include "Materials/MaterialInstanceDynamic.h"
 #include "Engine/Engine.h"
 
 AMiniRPGPickup::AMiniRPGPickup()
@@ -26,7 +28,34 @@ AMiniRPGPickup::AMiniRPGPickup()
 		MeshComponent->SetStaticMesh(CubeMeshAsset.Object);
 	}
 
+	GlowLight = CreateDefaultSubobject<UPointLightComponent>(TEXT("GlowLight"));
+	GlowLight->SetupAttachment(RootComponent);
+	GlowLight->Intensity = 3000.0f;
+	GlowLight->AttenuationRadius = 250.0f;
+	GlowLight->SetLightColor(FLinearColor(1.0f, 0.85f, 0.1f));
+
 	CollisionComponent->OnComponentBeginOverlap.AddDynamic(this, &AMiniRPGPickup::OnOverlapBegin);
+}
+
+void AMiniRPGPickup::ApplyTint()
+{
+	const FLinearColor Color = (PickupType == EItemType::Potion)
+		? FLinearColor(1.0f, 0.85f, 0.1f)
+		: FLinearColor(0.6f, 0.15f, 0.9f);
+
+	if (UMaterialInstanceDynamic* Dyn = MeshComponent->CreateAndSetMaterialInstanceDynamic(0))
+	{
+		Dyn->SetVectorParameterValue(TEXT("Color"), Color);
+	}
+	GlowLight->SetLightColor(Color);
+}
+
+void AMiniRPGPickup::ConfigurePickup(const FString& InName, EItemType InType, int32 InValue)
+{
+	ItemName = InName;
+	PickupType = InType;
+	ItemValue = InValue;
+	ApplyTint();
 }
 
 void AMiniRPGPickup::Tick(float DeltaSeconds)

@@ -1,33 +1,50 @@
-#include "MiniRPGPlayerPawn.h"
-#include "Components/StaticMeshComponent.h"
-#include "Components/SphereComponent.h"
-#include "GameFramework/FloatingPawnMovement.h"
+#include "MiniRPGPlayerCharacter.h"
+#include "GameFramework/CharacterMovementComponent.h"
 #include "GameFramework/SpringArmComponent.h"
 #include "Camera/CameraComponent.h"
+#include "Components/CapsuleComponent.h"
+#include "Components/SkeletalMeshComponent.h"
+#include "Materials/MaterialInstanceDynamic.h"
 #include "RPGStatsComponent.h"
 #include "InventoryComponent.h"
-#include "MiniRPGEnemyPawn.h"
+#include "MiniRPGEnemyCharacter.h"
+#include "MiniRPGGameMode.h"
 #include "Kismet/KismetSystemLibrary.h"
 #include "Engine/EngineTypes.h"
 #include "Engine/Engine.h"
 
-AMiniRPGPlayerPawn::AMiniRPGPlayerPawn()
+AMiniRPGPlayerCharacter::AMiniRPGPlayerCharacter()
 {
 	PrimaryActorTick.bCanEverTick = true;
 
-	CollisionComponent = CreateDefaultSubobject<USphereComponent>(TEXT("CollisionComponent"));
-	CollisionComponent->InitSphereRadius(50.0f);
-	CollisionComponent->SetCollisionProfileName(TEXT("Pawn"));
-	RootComponent = CollisionComponent;
+	GetCapsuleComponent()->InitCapsuleSize(34.0f, 88.0f);
 
-	MeshComponent = CreateDefaultSubobject<UStaticMeshComponent>(TEXT("MeshComponent"));
-	MeshComponent->SetupAttachment(RootComponent);
-	MeshComponent->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+	bUseControllerRotationYaw = false;
+	GetCharacterMovement()->bOrientRotationToMovement = true;
+	GetCharacterMovement()->RotationRate = FRotator(0.0f, 540.0f, 0.0f);
+	GetCharacterMovement()->MaxWalkSpeed = 500.0f;
 
-	static ConstructorHelpers::FObjectFinder<UStaticMesh> SphereMeshAsset(TEXT("/Engine/BasicShapes/Sphere.Sphere"));
-	if (SphereMeshAsset.Succeeded())
+	// Engine-bundled tutorial character mesh + anim blueprint (idle/walk
+	// blend space driven by speed) -- ships with any UE install, no
+	// content needs to be authored or imported.
+	static ConstructorHelpers::FObjectFinder<USkeletalMesh> MeshAsset(
+		TEXT("/Engine/Tutorial/SubEditors/TutorialAssets/Character/TutorialTPP.TutorialTPP"));
+	if (MeshAsset.Succeeded())
 	{
-		MeshComponent->SetStaticMesh(SphereMeshAsset.Object);
+		GetMesh()->SetSkeletalMesh(MeshAsset.Object);
+	}
+	static ConstructorHelpers::FClassFinder<UAnimInstance> AnimBPClass(
+		TEXT("/Engine/Tutorial/SubEditors/TutorialAssets/Character/TutorialTPP_AnimBlueprint"));
+	if (AnimBPClass.Succeeded())
+	{
+		GetMesh()->SetAnimInstanceClass(AnimBPClass.Class);
+	}
+	GetMesh()->SetRelativeLocation(FVector(0.0f, 0.0f, -GetCapsuleComponent()->GetScaledCapsuleHalfHeight()));
+	GetMesh()->SetRelativeRotation(FRotator(0.0f, -90.0f, 0.0f));
+
+	if (UMaterialInstanceDynamic* Dyn = GetMesh()->CreateAndSetMaterialInstanceDynamic(0))
+	{
+		Dyn->SetVectorParameterValue(TEXT("Color"), FLinearColor(0.15f, 0.35f, 0.85f));
 	}
 
 	SpringArm = CreateDefaultSubobject<USpringArmComponent>(TEXT("SpringArm"));
@@ -41,38 +58,33 @@ AMiniRPGPlayerPawn::AMiniRPGPlayerPawn()
 	Camera = CreateDefaultSubobject<UCameraComponent>(TEXT("Camera"));
 	Camera->SetupAttachment(SpringArm, USpringArmComponent::SocketName);
 
-	MovementComponent = CreateDefaultSubobject<UFloatingPawnMovement>(TEXT("MovementComponent"));
-	MovementComponent->MaxSpeed = 700.0f;
-	MovementComponent->Acceleration = 4000.0f;
-	MovementComponent->Deceleration = 4000.0f;
-
 	StatsComponent = CreateDefaultSubobject<URPGStatsComponent>(TEXT("StatsComponent"));
 	InventoryComponent = CreateDefaultSubobject<UInventoryComponent>(TEXT("InventoryComponent"));
 
 	AutoPossessPlayer = EAutoReceiveInput::Player0;
 }
 
-void AMiniRPGPlayerPawn::SetupPlayerInputComponent(UInputComponent* PlayerInputComponent)
+void AMiniRPGPlayerCharacter::SetupPlayerInputComponent(UInputComponent* PlayerInputComponent)
 {
 	Super::SetupPlayerInputComponent(PlayerInputComponent);
 
-	PlayerInputComponent->BindAxis("MoveForward", this, &AMiniRPGPlayerPawn::MoveForward);
-	PlayerInputComponent->BindAxis("MoveRight", this, &AMiniRPGPlayerPawn::MoveRight);
-	PlayerInputComponent->BindAction("Attack", IE_Pressed, this, &AMiniRPGPlayerPawn::OnAttackPressed);
-	PlayerInputComponent->BindAction("UseItem", IE_Pressed, this, &AMiniRPGPlayerPawn::OnUseItemPressed);
+	PlayerInputComponent->BindAxis("MoveForward", this, &AMiniRPGPlayerCharacter::MoveForward);
+	PlayerInputComponent->BindAxis("MoveRight", this, &AMiniRPGPlayerCharacter::MoveRight);
+	PlayerInputComponent->BindAction("Attack", IE_Pressed, this, &AMiniRPGPlayerCharacter::OnAttackPressed);
+	PlayerInputComponent->BindAction("UseItem", IE_Pressed, this, &AMiniRPGPlayerCharacter::OnUseItemPressed);
 }
 
-void AMiniRPGPlayerPawn::MoveForward(float Value)
+void AMiniRPGPlayerCharacter::MoveForward(float Value)
 {
 	AddMovementInput(FVector::ForwardVector, Value);
 }
 
-void AMiniRPGPlayerPawn::MoveRight(float Value)
+void AMiniRPGPlayerCharacter::MoveRight(float Value)
 {
 	AddMovementInput(FVector::RightVector, Value);
 }
 
-void AMiniRPGPlayerPawn::OnAttackPressed()
+void AMiniRPGPlayerCharacter::OnAttackPressed()
 {
 	if (!StatsComponent || StatsComponent->IsDead())
 	{
@@ -93,12 +105,12 @@ void AMiniRPGPlayerPawn::OnAttackPressed()
 	ObjectTypes.Add(UEngineTypes::ConvertToObjectType(ECC_Pawn));
 
 	UKismetSystemLibrary::SphereOverlapActors(this, GetActorLocation(), AttackRange, ObjectTypes,
-		AMiniRPGEnemyPawn::StaticClass(), IgnoreActors, OverlappingActors);
+		AMiniRPGEnemyCharacter::StaticClass(), IgnoreActors, OverlappingActors);
 
 	for (AActor* Actor : OverlappingActors)
 	{
-		AMiniRPGEnemyPawn* Enemy = Cast<AMiniRPGEnemyPawn>(Actor);
-		if (!Enemy || !Enemy->StatsComponent)
+		AMiniRPGEnemyCharacter* Enemy = Cast<AMiniRPGEnemyCharacter>(Actor);
+		if (!Enemy || !Enemy->StatsComponent || Enemy->StatsComponent->IsDead())
 		{
 			continue;
 		}
@@ -117,13 +129,17 @@ void AMiniRPGPlayerPawn::OnAttackPressed()
 			{
 				GEngine->AddOnScreenDebugMessage(-1, 2.0f, FColor::Cyan, TEXT("Enemy defeated!"));
 			}
+			if (AMiniRPGGameMode* GM = GetWorld()->GetAuthGameMode<AMiniRPGGameMode>())
+			{
+				GM->NotifyEnemyDefeated();
+			}
 			Enemy->Destroy();
 		}
 		break;
 	}
 }
 
-void AMiniRPGPlayerPawn::OnUseItemPressed()
+void AMiniRPGPlayerCharacter::OnUseItemPressed()
 {
 	if (InventoryComponent && InventoryComponent->Items.Num() > 0)
 	{
@@ -135,7 +151,7 @@ void AMiniRPGPlayerPawn::OnUseItemPressed()
 	}
 }
 
-void AMiniRPGPlayerPawn::Tick(float DeltaSeconds)
+void AMiniRPGPlayerCharacter::Tick(float DeltaSeconds)
 {
 	Super::Tick(DeltaSeconds);
 
